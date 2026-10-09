@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmritiPath</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root{--paper:#e6e9de;--panel:#f2f4ec;--ink:#1c2748;--soft:#5b6482;--route:#d9961a;--line:#c5cabb}
+*{box-sizing:border-box}
+body{margin:0;font:17px/1.5 "Palatino Linotype","Book Antiqua",Palatino,Georgia,serif;color:var(--ink);background:var(--paper)}
+.app{display:grid;grid-template-columns:minmax(340px,440px) 1fr;height:100vh}
+aside{overflow:auto;padding:20px;background:var(--panel);border-right:1px solid var(--line)}
+#map{height:100%}
+h1{margin:0 0 2px;font-size:30px;letter-spacing:.01em}
+.tag{margin:0 0 18px;color:var(--soft);font-size:15px}
+h3{margin:22px 0 6px;font-size:18px}
+input,textarea,button{font:inherit;color:inherit}
+input[type=text],textarea{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:3px;background:#fff}
+textarea{resize:vertical}
+button{cursor:pointer;padding:7px 13px;border:1.5px solid var(--ink);border-radius:3px;background:transparent}
+button.go{background:var(--ink);color:#fff}
+button:hover{background:var(--ink);color:#fff}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--route);outline-offset:1px}
+.row{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+.stop{padding:10px;margin:10px 0;border:1px solid var(--line);border-left:5px solid var(--line);background:#fff}
+.stop.sel{border-left-color:var(--route)}
+.stop .n{flex:none;width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;text-align:center;line-height:26px;font-size:14px}
+.stop textarea{margin-bottom:6px;font-size:15px}
+.meta{display:flex;justify-content:space-between;align-items:center;font-size:14px;color:var(--soft)}
+.small{padding:3px 8px;font-size:14px}
+#status{min-height:24px;color:var(--soft);font-style:italic}
+.pin span{display:block;width:28px;height:28px;border-radius:50%;background:var(--ink);color:#fff;text-align:center;line-height:28px;border:2px solid var(--route);font:700 14px sans-serif}
+@media(max-width:800px){.app{grid-template-columns:1fr;grid-template-rows:auto 55vh;height:auto}aside{border-right:0}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside>
+  <h1>SmritiPath</h1>
+  <p class="tag">Turn a spoken memory of a place into a walk you take together. Everything runs on this laptop.</p>
+
+  <h3>1. Add the recording</h3>
+  <div class="row"><input type="file" id="audio" accept="audio/*,video/*,.mpeg,.mpg"><button id="btnTranscribe">Transcribe</button></div>
+  <textarea id="transcript" rows="5" placeholder="The transcript appears here. You can also paste or fix text by hand."></textarea>
+  <div class="row" style="margin-top:6px"><button class="go" id="btnExtract">Find the stops</button></div>
+  <div id="status" role="status"></div>
+
+  <h3>2. Check the stops and pin them</h3>
+  <div class="row"><input type="text" id="search" placeholder="Search your area, e.g. a landmark or locality"><button id="btnSearch">Go</button></div>
+  <input type="text" id="title" placeholder="Walk title" style="margin:8px 0">
+  <div id="stops"><p class="tag">No stops yet. Add a recording or paste a transcript, then choose Find the stops.</p></div>
+
+  <h3>3. Take it outside</h3>
+  <button class="go" id="btnPack">Download Walk Pack</button>
+  <p class="tag">One page that works with no signal. Print it or save it to your phone, then put the screen away.</p>
+</aside>
+<div id="map" aria-label="Map for pinning stops"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let state = { title: "", stops: [], sel: null };
+
+const map = L.map("map").setView([20.59, 78.96], 5);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" }).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+function drawMap() {
+  layer.clearLayers();
+  const pts = [];
+  state.stops.forEach((s, i) => {
+    if (s.lat == null) return;
+    pts.push([s.lat, s.lng]);
+    L.marker([s.lat, s.lng], { icon: L.divIcon({ className: "pin", html: `<span>${i + 1}</span>`, iconSize: [28, 28] }) }).addTo(layer);
+  });
+  if (pts.length > 1) L.polyline(pts, { color: "#d9961a", weight: 4, dashArray: "2 10", lineCap: "round" }).addTo(layer);
+}
+
+map.on("click", e => {
+  if (state.sel == null) return alert("Choose a stop first with Pin on map, then click the map.");
+  const s = state.stops[state.sel];
+  s.lat = e.latlng.lat; s.lng = e.latlng.lng;
+  state.sel = state.sel + 1 < state.stops.length ? state.sel + 1 : null;
+  render();
+});
+
+function render() {
+  $("#title").value = state.title;
+  if (!state.stops.length) return drawMap();
+  $("#stops").innerHTML = state.stops.map((s, i) => `
+    <div class="stop ${state.sel === i ? "sel" : ""}">
+      <div class="row"><span class="n">${i + 1}</span>
+        <input type="text" data-i="${i}" data-k="place" value="${esc(s.place)}" aria-label="Place name">
+        <button class="small" data-act="up" data-i="${i}" title="Move up">Up</button>
+        <button class="small" data-act="down" data-i="${i}" title="Move down">Down</button>
+        <button class="small" data-act="del" data-i="${i}" title="Remove">Remove</button></div>
+      <textarea rows="2" data-i="${i}" data-k="then" aria-label="What it was like then">${esc(s.then)}</textarea>
+      <textarea rows="2" data-i="${i}" data-k="ask" aria-label="Questions to ask here">${esc((s.ask_here || []).join("\n"))}</textarea>
+      <div class="meta"><span>${s.quote_verified ? "Quote found in the recording" : "Quote not found. Please check it."}</span>
+        <button class="small" data-act="pin" data-i="${i}">${s.lat == null ? "Pin on map" : "Pin again"}</button></div>
+    </div>`).join("");
+  drawMap();
+}
+
+$("#stops").addEventListener("input", e => {
+  const { i, k } = e.target.dataset; if (i == null) return;
+  const s = state.stops[i];
+  if (k === "ask") s.ask_here = e.target.value.split("\n").map(x => x.trim()).filter(Boolean);
+  else s[k] = e.target.value;
+});
+$("#stops").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  const i = +b.dataset.i, a = b.dataset.act, st = state.stops;
+  state.sel = a === "pin" ? i : null;
+  if (a === "del") st.splice(i, 1);
+  if (a === "up" && i > 0) [st[i - 1], st[i]] = [st[i], st[i - 1]];
+  if (a === "down" && i < st.length - 1) [st[i + 1], st[i]] = [st[i], st[i + 1]];
+  render();
+});
+$("#title").addEventListener("input", e => state.title = e.target.value);
+
+const setBusy = t => $("#status").textContent = t;
+async function post(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+
+$("#btnTranscribe").onclick = async () => {
+  const f = $("#audio").files[0];
+  if (!f) return alert("Choose an audio file first.");
+  setBusy("Transcribing on this laptop. This can take a minute.");
+  try {
+    const fd = new FormData(); fd.append("file", f);
+    const d = await post("/api/transcribe", { method: "POST", body: fd });
+    $("#transcript").value = d.transcript;
+    setBusy(`Done. Detected language: ${d.language}. Fix any mistakes, then find the stops.`);
+  } catch (e) { setBusy(""); alert(e.message); }
+};
+
+$("#btnExtract").onclick = async () => {
+  const t = $("#transcript").value.trim();
+  if (!t) return alert("Add a transcript first.");
+  setBusy("Finding the stops with the local model.");
+  try {
+    const d = await post("/api/extract", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transcript: t }) });
+    state = { title: d.title, sel: 0, stops: d.stops.map(s => ({ ...s, lat: null, lng: null })) };
+    render();
+    setBusy("Now pin each stop: click a spot on the map for stop 1, then 2, and so on.");
+  } catch (e) { setBusy(""); alert(e.message); }
+};
+
+$("#btnSearch").onclick = async () => {
+  const q = $("#search").value.trim(); if (!q) return;
+  try {
+    const d = await (await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(q))).json();
+    if (d[0]) map.setView([+d[0].lat, +d[0].lon], 17); else alert("Place not found. Try a nearby landmark.");
+  } catch { alert("Search needs internet. You can also zoom the map by hand."); }
+};
+
+function walkPack() {
+  const st = state.stops;
+  if (st.length < 2 || st.some(s => s.lat == null)) return alert("Pin every stop on the map first.");
+  const W = 640, H = 400, pad = 60;
+  const kx = Math.cos(st.reduce((a, s) => a + s.lat, 0) / st.length * Math.PI / 180);
+  const xs = st.map(s => s.lng * kx), ys = st.map(s => -s.lat);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const sc = Math.min((W - 2 * pad) / ((maxX - minX) || 1e-9), (H - 2 * pad) / ((maxY - minY) || 1e-9));
+  const ox = (W - (maxX - minX) * sc) / 2, oy = (H - (maxY - minY) * sc) / 2;
+  const P = st.map((s, i) => [ox + (xs[i] - minX) * sc, oy + (ys[i] - minY) * sc]);
+  const svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sketch map of the walk">
+    <polyline points="${P.map(p => p.join(",")).join(" ")}" fill="none" stroke="#d9961a" stroke-width="4" stroke-dasharray="2 10" stroke-linecap="round"/>
+    ${P.map((p, i) => { const right = p[0] > W * 0.6;
+      return `<circle cx="${p[0]}" cy="${p[1]}" r="15" fill="#1c2748"/><text x="${p[0]}" y="${p[1] + 5}" text-anchor="middle" fill="#fff" font-size="15" font-weight="700" font-family="sans-serif">${i + 1}</text><text x="${p[0] + (right ? -22 : 22)}" y="${p[1] + 5}" text-anchor="${right ? "end" : "start"}" font-size="15" fill="#1c2748">${esc(st[i].place)}</text>`; }).join("")}
+    <text x="${W - 28}" y="34" font-size="20" fill="#5b6482" text-anchor="middle">N</text><path d="M${W - 28} 40 v22 m-6 -16 l6 -8 l6 8" stroke="#5b6482" fill="none" stroke-width="2"/></svg>`;
+  const cards = st.map((s, i) => `<section><h2><span>${i + 1}</span>${esc(s.place)}</h2>
+    <p><em>Then.</em> ${esc(s.then)}</p><blockquote>&ldquo;${esc(s.quote)}&rdquo;</blockquote>
+    <p class="q"><em>Ask here.</em></p><ul>${(s.ask_here || []).map(q => `<li>${esc(q)}</li>`).join("")}</ul>
+    <p class="now"><em>Now.</em> What do you see here today?</p><div class="rule"></div><div class="rule"></div></section>`).join("");
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(state.title)}</title>
+<style>body{margin:0;background:#e6e9de;color:#1c2748;font:18px/1.55 "Palatino Linotype","Book Antiqua",Palatino,Georgia,serif}
+main{max-width:720px;margin:0 auto;padding:28px 20px 40px}h1{font-size:34px;margin:0}.sub{color:#5b6482;margin:4px 0 18px}
+svg{width:100%;height:auto;background:#f2f4ec;border:1px solid #c5cabb}
+section{margin-top:26px;padding-top:14px;border-top:2px solid #1c2748;break-inside:avoid}
+h2{font-size:23px;margin:0 0 6px;display:flex;gap:10px;align-items:center}h2 span{flex:none;width:30px;height:30px;border-radius:50%;background:#1c2748;color:#fff;text-align:center;line-height:30px;font-size:16px}
+blockquote{margin:8px 0;padding-left:12px;border-left:4px solid #d9961a;color:#3b4565}ul{margin:2px 0 8px;padding-left:22px}
+.rule{height:26px;border-bottom:1px solid #8a92ab}.now{margin-bottom:0}footer{margin-top:34px;color:#5b6482;font-size:15px}
+@media print{body{background:#fff}svg{background:#fff}}</style></head><body><main>
+<h1>${esc(state.title)}</h1><p class="sub">Walk this route with the person who remembers it. The sketch map is not to scale.</p>
+${svg}${cards}<footer>Made with SmritiPath. Speech to text and stop-finding ran on one laptop with open-source models. The map sketch uses OpenStreetMap positions.</footer></main></body></html>`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  a.download = "smritipath-walk.html";
+  a.click();
+}
+$("#btnPack").onclick = walkPack;
+</script>
+</body>
+</html>

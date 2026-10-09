@@ -1,0 +1,7 @@
+faster-whisper
+fastapi
+uvicorn
+python-multipart
+requests
+numpy
+imageio-ffmpeg

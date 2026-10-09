@@ -1,5 +1,6 @@
 .venv/
 *.m4a
+*.mpeg
 *.mp3
 *.wav
 transcript.txt
